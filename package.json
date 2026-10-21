@@ -1,0 +1,14 @@
+{
+  "name": "amigo-secreto",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["apps/web", "apps/api"],
+  "scripts": {
+    "dev": "npm run dev -w @amigo-secreto/web",
+    "build": "npm run build -w @amigo-secreto/web",
+    "typecheck": "npm run typecheck -w @amigo-secreto/web",
+    "api:dev": "npm run dev -w @amigo-secreto/api"
+  },
+  "engines": {"node": ">=20"}
+}

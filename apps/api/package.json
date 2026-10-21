@@ -1,0 +1,1 @@
+{"name":"@amigo-secreto/api","private":true,"type":"module","scripts":{"dev":"wrangler dev","typecheck":"tsc --noEmit"},"devDependencies":{"wrangler":"^4.14.0","typescript":"^5.8.3","@cloudflare/workers-types":"^4.20250521.0"}}

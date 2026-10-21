@@ -1,0 +1,6 @@
+name = "amigo-secreto-api"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# D1 será configurado após criar o banco na sua conta Cloudflare.
+# Não coloque tokens ou segredos neste arquivo.
