@@ -78,6 +78,46 @@ async function encryptRecipient(recipientId: string, secret: string): Promise<{c
   const ciphertext = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, cryptoKey, new TextEncoder().encode(recipientId));
   return { cipher: bytesToHex(new Uint8Array(ciphertext)), iv: bytesToHex(iv) };
 }
+function hexToBytes(value: string): Uint8Array {
+  if (!/^(?:[0-9a-f]{2})+$/i.test(value)) throw new Error('Dados criptografados inválidos');
+  return Uint8Array.from(value.match(/../g)!, pair => parseInt(pair, 16));
+}
+async function decryptRecipient(cipher: string, iv: string, secret: string): Promise<string> {
+  if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error('Chave de criptografia inválida');
+  const cryptoKey = await crypto.subtle.importKey('raw', hexToBytes(secret), 'AES-GCM', false, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: hexToBytes(iv) }, cryptoKey, hexToBytes(cipher));
+  return new TextDecoder().decode(plaintext);
+}
+async function envelopeContext(groupId: string, participantId: string, env: Env): Promise<{ status: 'draft' | 'drawn'; name: string } | Response> {
+  const group = await env.DB.prepare('SELECT status FROM groups WHERE id=? AND expires_at>?').bind(groupId, iso(new Date())).first<{status: 'draft' | 'drawn'}>();
+  if (!group) return error('Grupo não encontrado ou expirado', 404);
+  const participant = await env.DB.prepare('SELECT name FROM participants WHERE id=? AND group_id=?').bind(participantId, groupId).first<{name:string}>();
+  if (!participant) return error('Participante não encontrado neste grupo', 404);
+  return { status: group.status, name: participant.name };
+}
+async function getEnvelope(groupId: string, participantId: string, env: Env): Promise<Response> {
+  const context = await envelopeContext(groupId, participantId, env);
+  if (context instanceof Response) return context;
+  if (context.status !== 'drawn') return error('O grupo ainda não foi sorteado', 409);
+  const assignment = await env.DB.prepare('SELECT first_opened_at FROM assignments WHERE group_id=? AND giver_id=?').bind(groupId, participantId).first<{first_opened_at:string|null}>();
+  if (!assignment) return error('Envelope não encontrado', 404);
+  return json({ groupId, participantId, opened: assignment.first_opened_at !== null, firstOpenedAt: assignment.first_opened_at });
+}
+async function revealEnvelope(groupId: string, participantId: string, env: Env): Promise<Response> {
+  const context = await envelopeContext(groupId, participantId, env);
+  if (context instanceof Response) return context;
+  if (context.status !== 'drawn') return error('O grupo ainda não foi sorteado', 409);
+  const assignment = await env.DB.prepare('SELECT recipient_ciphertext,recipient_iv,first_opened_at FROM assignments WHERE group_id=? AND giver_id=?').bind(groupId, participantId).first<{recipient_ciphertext:string;recipient_iv:string;first_opened_at:string|null}>();
+  if (!assignment) return error('Envelope não encontrado', 404);
+  if (!env.DRAW_ENCRYPTION_KEY) return error('Chave de criptografia não configurada', 503);
+  const recipientId = await decryptRecipient(assignment.recipient_ciphertext, assignment.recipient_iv, env.DRAW_ENCRYPTION_KEY);
+  const recipient = await env.DB.prepare('SELECT id,name FROM participants WHERE id=? AND group_id=?').bind(recipientId, groupId).first<{id:string;name:string}>();
+  if (!recipient) return error('Destinatário do sorteio não encontrado', 500);
+  // A atualização condicional preserva a primeira abertura, inclusive em requisições simultâneas.
+  await env.DB.prepare('UPDATE assignments SET first_opened_at=? WHERE group_id=? AND giver_id=? AND first_opened_at IS NULL').bind(iso(new Date()), groupId, participantId).run();
+  const opened = await env.DB.prepare('SELECT first_opened_at FROM assignments WHERE group_id=? AND giver_id=?').bind(groupId, participantId).first<{first_opened_at:string}>();
+  return json({ groupId, participantId, participantName: context.name, recipient: { id: recipient.id, name: recipient.name }, firstOpenedAt: opened?.first_opened_at ?? null, alreadyOpened: assignment.first_opened_at !== null });
+}
 async function runDraw(request: Request, groupId: string, env: Env): Promise<Response> {
   const bearer = request.headers.get('authorization')?.match(/^Bearer (\S+)$/i)?.[1];
   if (!bearer) return error('Token administrativo obrigatório', 401);
@@ -105,7 +145,7 @@ async function runDraw(request: Request, groupId: string, env: Env): Promise<Res
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === 'GET' && url.pathname === '/api/v1/health') return json({ status: 'ok', service: 'amigo-secreto-api', stage: '4B' });
+    if (request.method === 'GET' && url.pathname === '/api/v1/health') return json({ status: 'ok', service: 'amigo-secreto-api', stage: '4C' });
     if (!env.DB) return error('Banco D1 não configurado', 503);
     if (request.method === 'POST' && url.pathname === '/api/v1/groups') {
       try { return await createGroup(request, env); } catch (e) { console.error('createGroup failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível criar o grupo', 500); }
@@ -117,6 +157,17 @@ export default {
     const drawMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/draw$/);
     if (request.method === 'POST' && drawMatch) {
       try { return await runDraw(request, drawMatch[1], env); } catch (e) { console.error('runDraw failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível realizar o sorteio', 500); }
+    }
+    const envelopeMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/envelopes\/([a-f0-9-]{36})(\/reveal)?$/);
+    if (envelopeMatch) {
+      const [, groupId, participantId, action] = envelopeMatch;
+      try {
+        if (request.method === 'GET' && !action) return await getEnvelope(groupId, participantId, env);
+        if (request.method === 'POST' && action === '/reveal') return await revealEnvelope(groupId, participantId, env);
+      } catch (e) {
+        console.error('envelope failed', e instanceof Error ? e.name : 'unknown');
+        return error('Não foi possível consultar o envelope', 500);
+      }
     }
     return error('Endpoint não encontrado', 404);
   }
