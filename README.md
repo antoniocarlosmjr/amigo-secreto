@@ -56,3 +56,12 @@ O rodapé exibe **Feito com 💜 por Antonio Martins**. O link do GitHub só apa
 3. Reinicie `npm run dev` para ver o link.
 
 Para o deploy, configure `VITE_GITHUB_URL` nas variáveis de ambiente do build do frontend. Não coloque informações secretas em variáveis `VITE_`.
+
+## Publicar no GitHub
+
+Consulte [docs/github-setup.md](docs/github-setup.md) para criar o repositório, enviar o código e verificar o CI. A publicação na Cloudflare será configurada depois.
+
+
+## Etapa 3 — API e D1 (em desenvolvimento)
+
+Veja [`docs/etapa3-d1.md`](docs/etapa3-d1.md) para criar o banco, aplicar migrações e testar a API localmente. O frontend publicado permanece independente.

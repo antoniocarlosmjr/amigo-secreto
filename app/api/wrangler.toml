@@ -1,0 +1,8 @@
+name = "amigo-secreto-api"
+main = "src/index.ts"
+compatibility_date = "2026-10-19"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "amigo-secreto-db"
+database_id = "73d91689-4531-482c-ad7d-bb684bb7a639"
