@@ -142,6 +142,60 @@ async function runDraw(request: Request, groupId: string, env: Env): Promise<Res
   catch { return error('O sorteio já foi realizado ou não pôde ser salvo', 409); }
   return json({ groupId, status: 'drawn', participantsCount: participants.length }, 201);
 }
+// O painel exige o token do organizador; o link público nunca o inclui.
+async function getAdminOverview(request: Request, groupId: string, env: Env): Promise<Response> {
+  const bearer = request.headers.get('authorization')?.match(/^Bearer (\S+)$/i)?.[1];
+  if (!bearer) return error('Token administrativo obrigatório', 401);
+  const group = await env.DB.prepare('SELECT id,name,status,admin_token_hash FROM groups WHERE id=? AND expires_at>?')
+    .bind(groupId, iso(new Date()))
+    .first<{id:string;name:string;status:string;admin_token_hash:string}>();
+  if (!group) return error('Grupo não encontrado ou expirado', 404);
+  if (await sha256(bearer) !== group.admin_token_hash) return error('Token administrativo inválido', 403);
+  if (group.status !== 'drawn') return error('O grupo ainda não foi sorteado', 409);
+  const participants = (await env.DB.prepare(
+    'SELECT p.id AS participantId,p.name AS participantName,a.first_opened_at AS firstOpenedAt FROM participants p LEFT JOIN assignments a ON a.group_id=p.group_id AND a.giver_id=p.id WHERE p.group_id=? ORDER BY p.rowid'
+  ).bind(groupId).all<{participantId:string;participantName:string;firstOpenedAt:string|null}>()).results;
+  return json({
+    groupId:group.id,
+    groupName:group.name,
+    totalParticipants:participants.length,
+    openedCount:participants.filter(p=>p.firstOpenedAt !== null).length,
+    participants:participants.map(p=>({
+      participantId:p.participantId,
+      participantName:p.participantName,
+      opened:p.firstOpenedAt !== null,
+      firstOpenedAt:p.firstOpenedAt
+    }))
+  });
+}
+async function wishesContext(groupId: string, env: Env): Promise<Response | true> {
+  const group = await env.DB.prepare('SELECT status FROM groups WHERE id=? AND expires_at>?').bind(groupId, iso(new Date())).first<{status:string}>();
+  if (!group) return error('Grupo não encontrado ou expirado', 404);
+  if (group.status !== 'drawn') return error('O grupo ainda não foi sorteado', 409);
+  return true;
+}
+async function getWishes(groupId: string, env: Env): Promise<Response> {
+  const valid = await wishesContext(groupId, env);
+  if (valid !== true) return valid;
+  const rows = await env.DB.prepare("SELECT p.id AS participantId,p.name AS participantName,COALESCE(w.content, '') AS content,w.updated_at AS updatedAt FROM participants p LEFT JOIN wishes w ON w.group_id=p.group_id AND w.participant_id=p.id WHERE p.group_id=? ORDER BY p.rowid").bind(groupId).all();
+  return json({groupId, wishes: rows.results});
+}
+async function putWish(request: Request, groupId: string, participantId: string, env: Env): Promise<Response> {
+  const valid = await wishesContext(groupId, env);
+  if (valid !== true) return valid;
+  const participant = await env.DB.prepare('SELECT id,name FROM participants WHERE id=? AND group_id=?').bind(participantId, groupId).first<{id:string;name:string}>();
+  if (!participant) return error('Participante não encontrado neste grupo', 404);
+  const raw = await request.text();
+  if (raw.length > 4096) return error('Corpo da requisição muito grande', 413);
+  let body: unknown;
+  try { body = JSON.parse(raw); } catch { return error('JSON inválido'); }
+  if (!body || typeof body !== 'object' || Array.isArray(body) || typeof (body as {content?:unknown}).content !== 'string') return error('Informe content como texto');
+  const content = (body as {content:string}).content.trim();
+  if (Array.from(content).length > 500) return error('A lista deve ter no máximo 500 caracteres');
+  const updatedAt = iso(new Date());
+  await env.DB.prepare('INSERT INTO wishes (group_id,participant_id,content,updated_at) VALUES (?,?,?,?) ON CONFLICT(group_id,participant_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at').bind(groupId,participantId,content,updatedAt).run();
+  return json({groupId,participantId,participantName:participant.name,content,updatedAt});
+}
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -157,6 +211,21 @@ export default {
     const drawMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/draw$/);
     if (request.method === 'POST' && drawMatch) {
       try { return await runDraw(request, drawMatch[1], env); } catch (e) { console.error('runDraw failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível realizar o sorteio', 500); }
+    }
+    const adminMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/admin\/overview$/);
+    if (request.method === 'GET' && adminMatch) {
+      try { return await getAdminOverview(request, adminMatch[1], env); }
+      catch (e) { console.error('admin overview failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível consultar o painel', 500); }
+    }
+    const wishesMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/wishes(?:\/([a-f0-9-]{36}))?$/);
+    if (wishesMatch) {
+      try {
+        if (request.method === 'GET' && !wishesMatch[2]) return await getWishes(wishesMatch[1], env);
+        if (request.method === 'PUT' && wishesMatch[2]) return await putWish(request, wishesMatch[1], wishesMatch[2], env);
+      } catch (e) {
+        console.error('wishes failed', e instanceof Error ? e.name : 'unknown');
+        return error('Não foi possível acessar as listas de desejos', 500);
+      }
     }
     const envelopeMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/envelopes\/([a-f0-9-]{36})(\/reveal)?$/);
     if (envelopeMatch) {
