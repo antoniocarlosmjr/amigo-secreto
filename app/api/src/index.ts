@@ -1,21 +1,14 @@
-interface Env { DB: D1Database }
+import { drawAssignments } from './draw';
 
+interface Env { DB: D1Database; DRAW_ENCRYPTION_KEY: string }
 type ParticipantInput = { name: string };
-type CreateInput = {
-  name?: unknown; eventDate?: unknown; giftAmountCents?: unknown;
-  participants?: unknown; restrictions?: unknown;
-};
-
-const json = (data: unknown, status = 200) => Response.json(data, {
-  status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
-});
+type CreateInput = { name?: unknown; eventDate?: unknown; giftAmountCents?: unknown; participants?: unknown; restrictions?: unknown };
+const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 const error = (message: string, status = 400) => json({ error: message }, status);
 const id = () => crypto.randomUUID();
 const key = (name: string) => name.normalize('NFC').trim().toLocaleLowerCase('pt-BR');
-const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
-  .map(x => x.toString(16).padStart(2, '0')).join('');
+const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))).map(x => x.toString(16).padStart(2, '0')).join('');
 const iso = (d: Date) => d.toISOString();
-
 function validate(input: CreateInput): { name: string; eventDate: string | null; giftAmountCents: number | null; participants: string[]; restrictions: [number, number][] } | string {
   if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 100) return 'Nome do grupo deve ter de 1 a 100 caracteres';
   if (!Array.isArray(input.participants) || input.participants.length < 3 || input.participants.length > 50) return 'Informe de 3 a 50 participantes';
@@ -49,7 +42,6 @@ function validate(input: CreateInput): { name: string; eventDate: string | null;
   }
   return { name: input.name.trim(), eventDate, giftAmountCents, participants: names, restrictions };
 }
-
 async function createGroup(request: Request, env: Env): Promise<Response> {
   if (Number(request.headers.get('content-length') || 0) > 16000) return error('Corpo da requisição muito grande', 413);
   let body: CreateInput;
@@ -64,37 +56,67 @@ async function createGroup(request: Request, env: Env): Promise<Response> {
   const now = new Date();
   const expires = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
   const statements = [
-    env.DB.prepare('INSERT INTO groups (id,admin_token_hash,name,event_date,gift_amount_cents,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
-      .bind(groupId, adminTokenHash, valid.name, valid.eventDate, valid.giftAmountCents, iso(now), iso(expires)),
-    ...valid.participants.map((name, i) => env.DB.prepare('INSERT INTO participants (id,group_id,name,name_key) VALUES (?,?,?,?)')
-      .bind(participantIds[i], groupId, name, key(name))),
-    ...valid.restrictions.map(([a,b]) => env.DB.prepare('INSERT INTO restrictions (group_id,participant_a,participant_b) VALUES (?,?,?)')
-      .bind(groupId, ...[participantIds[a], participantIds[b]].sort()))
+    env.DB.prepare('INSERT INTO groups (id,admin_token_hash,name,event_date,gift_amount_cents,created_at,expires_at) VALUES (?,?,?,?,?,?,?)').bind(groupId, adminTokenHash, valid.name, valid.eventDate, valid.giftAmountCents, iso(now), iso(expires)),
+    ...valid.participants.map((name, i) => env.DB.prepare('INSERT INTO participants (id,group_id,name,name_key) VALUES (?,?,?,?)').bind(participantIds[i], groupId, name, key(name))),
+    ...valid.restrictions.map(([a,b]) => env.DB.prepare('INSERT INTO restrictions (group_id,participant_a,participant_b) VALUES (?,?,?)').bind(groupId, ...[participantIds[a], participantIds[b]].sort()))
   ];
   await env.DB.batch(statements);
-  // O token administrativo só é devolvido nesta resposta; nunca no endpoint público.
   return json({ groupId, adminToken, expiresAt: iso(expires), status: 'draft', note: 'O sorteio ainda não foi realizado' }, 201);
 }
-
 async function getGroup(groupId: string, env: Env): Promise<Response> {
   const group = await env.DB.prepare('SELECT id,name,event_date,gift_amount_cents,created_at,expires_at,status FROM groups WHERE id = ? AND expires_at > ?').bind(groupId, iso(new Date())).first();
   if (!group) return error('Grupo não encontrado ou expirado', 404);
   const participants = await env.DB.prepare('SELECT id,name FROM participants WHERE group_id = ? ORDER BY rowid').bind(groupId).all();
   return json({ ...group, participants: participants.results });
 }
-
+function bytesToHex(bytes: Uint8Array): string { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
+async function encryptRecipient(recipientId: string, secret: string): Promise<{cipher: string; iv: string}> {
+  if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error('DRAW_ENCRYPTION_KEY deve ter 64 caracteres hexadecimais');
+  const raw = Uint8Array.from(secret.match(/../g)!, pair => parseInt(pair, 16));
+  const cryptoKey = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, cryptoKey, new TextEncoder().encode(recipientId));
+  return { cipher: bytesToHex(new Uint8Array(ciphertext)), iv: bytesToHex(iv) };
+}
+async function runDraw(request: Request, groupId: string, env: Env): Promise<Response> {
+  const bearer = request.headers.get('authorization')?.match(/^Bearer (\S+)$/i)?.[1];
+  if (!bearer) return error('Token administrativo obrigatório', 401);
+  const group = await env.DB.prepare('SELECT id,admin_token_hash,status FROM groups WHERE id=? AND expires_at>?').bind(groupId, iso(new Date())).first<{id:string;admin_token_hash:string;status:string}>();
+  if (!group) return error('Grupo não encontrado ou expirado', 404);
+  if (await sha256(bearer) !== group.admin_token_hash) return error('Token administrativo inválido', 403);
+  if (group.status !== 'draft') return error('Este grupo já foi sorteado', 409);
+  const participants = (await env.DB.prepare('SELECT id FROM participants WHERE group_id=? ORDER BY rowid').bind(groupId).all<{id:string}>()).results;
+  const restrictions = (await env.DB.prepare('SELECT participant_a,participant_b FROM restrictions WHERE group_id=?').bind(groupId).all<{participant_a:string;participant_b:string}>()).results;
+  const indices = new Map(participants.map((p,i) => [p.id, i]));
+  const pairs = restrictions.map(r => [indices.get(r.participant_a)!, indices.get(r.participant_b)!] as const);
+  const result = drawAssignments(participants.length, pairs);
+  if (!result) return error('Não existe sorteio possível com estas restrições', 422);
+  if (!env.DRAW_ENCRYPTION_KEY) return error('Chave de criptografia não configurada', 503);
+  const encrypted = await Promise.all(result.map(index => encryptRecipient(participants[index].id, env.DRAW_ENCRYPTION_KEY)));
+  const statements = [
+    env.DB.prepare('INSERT INTO draw_guards (group_id,created_at) VALUES (?,?)').bind(groupId, iso(new Date())),
+    ...participants.map((p,i) => env.DB.prepare('INSERT INTO assignments (group_id,giver_id,recipient_ciphertext,recipient_iv) VALUES (?,?,?,?)').bind(groupId, p.id, encrypted[i].cipher, encrypted[i].iv)),
+    env.DB.prepare("UPDATE groups SET status='drawn' WHERE id=? AND status='draft'").bind(groupId)
+  ];
+  try { await env.DB.batch(statements); }
+  catch { return error('O sorteio já foi realizado ou não pôde ser salvo', 409); }
+  return json({ groupId, status: 'drawn', participantsCount: participants.length }, 201);
+}
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === 'GET' && url.pathname === '/api/v1/health') return json({ status: 'ok', service: 'amigo-secreto-api', stage: 3 });
+    if (request.method === 'GET' && url.pathname === '/api/v1/health') return json({ status: 'ok', service: 'amigo-secreto-api', stage: '4B' });
+    if (!env.DB) return error('Banco D1 não configurado', 503);
     if (request.method === 'POST' && url.pathname === '/api/v1/groups') {
-      if (!env.DB) return error('Banco D1 não configurado', 503);
       try { return await createGroup(request, env); } catch (e) { console.error('createGroup failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível criar o grupo', 500); }
     }
     const match = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})$/);
     if (request.method === 'GET' && match) {
-      if (!env.DB) return error('Banco D1 não configurado', 503);
       try { return await getGroup(match[1], env); } catch { return error('Não foi possível consultar o grupo', 500); }
+    }
+    const drawMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/draw$/);
+    if (request.method === 'POST' && drawMatch) {
+      try { return await runDraw(request, drawMatch[1], env); } catch (e) { console.error('runDraw failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível realizar o sorteio', 500); }
     }
     return error('Endpoint não encontrado', 404);
   }
