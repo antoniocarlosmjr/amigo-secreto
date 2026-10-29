@@ -82,10 +82,32 @@ function hexToBytes(value: string): Uint8Array {
   if (!/^(?:[0-9a-f]{2})+$/i.test(value)) throw new Error('Dados criptografados inválidos');
   return Uint8Array.from(value.match(/../g)!, pair => parseInt(pair, 16));
 }
-async function decryptRecipient(cipher: string, iv: string, secret: string): Promise<string> {
-  if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error('Chave de criptografia inválida');
-  const cryptoKey = await crypto.subtle.importKey('raw', hexToBytes(secret), 'AES-GCM', false, ['decrypt']);
-  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: hexToBytes(iv) }, cryptoKey, hexToBytes(cipher));
+async function decryptRecipient(
+  cipher: string,
+  iv: string,
+  secret: string
+): Promise<string> {
+  if (!/^[a-f0-9]{64}$/i.test(secret)) {
+    throw new Error('Chave de criptografia inválida');
+  }
+
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    Uint8Array.from(hexToBytes(secret)),
+    'AES-GCM',
+    false,
+    ['decrypt']
+  );
+
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: Uint8Array.from(hexToBytes(iv)),
+    },
+    cryptoKey,
+    Uint8Array.from(hexToBytes(cipher))
+  );
+
   return new TextDecoder().decode(plaintext);
 }
 async function envelopeContext(groupId: string, participantId: string, env: Env): Promise<{ status: 'draft' | 'drawn'; name: string } | Response> {
