@@ -1,0 +1,13 @@
+name = "amigo-secreto-staging"
+main = "src/index.ts"
+compatibility_date = "2026-10-19"
+
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "amigo-secreto-staging-db"
+database_id = "4b88cb7b-3297-48f4-81fe-586babd5f567"

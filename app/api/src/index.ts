@@ -232,7 +232,10 @@ export default {
     }
     const drawMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/draw$/);
     if (request.method === 'POST' && drawMatch) {
-      try { return await runDraw(request, drawMatch[1], env); } catch (e) { console.error('runDraw failed', e instanceof Error ? e.name : 'unknown'); return error('Não foi possível realizar o sorteio', 500); }
+      try { return await runDraw(request, drawMatch[1], env); } catch (e) { console.error(
+  'runDraw failed',
+  e instanceof Error ? `${e.name}: ${e.message}` : 'unknown'
+); return error('Não foi possível realizar o sorteio', 500); }
     }
     const adminMatch = url.pathname.match(/^\/api\/v1\/groups\/([a-f0-9-]{36})\/admin\/overview$/);
     if (request.method === 'GET' && adminMatch) {
