@@ -1,67 +1,87 @@
-# 🎁 Amigo Secreto — Etapa 1
+# 🎁 Amigo Secreto
 
-Fundação do projeto **Vite + TypeScript + Cloudflare Workers**. A V4 aprovada está disponível como demonstração local.
+Aplicativo web para organizar sorteios de amigo secreto, sem cadastro, sem anúncios e sem solicitar telefone ou e-mail.
 
-## Requisitos
+## Funcionalidades
 
-- Node.js 20+ (recomendado Node.js 22)
-- npm
+- Grupos de 3 a 50 participantes.
+- Sorteio imediato com restrições opcionais.
+- Link compartilhável para os participantes.
+- Revelação individual com confirmação.
+- Lista de desejos.
+- Painel do organizador com acesso separado.
+- Persistência no Cloudflare D1.
+- Interface responsiva para celular e computador.
 
-## Executar frontend
+## Tecnologias
 
-```bash
-npm install
-npm run dev
-```
+- Frontend: HTML, CSS, JavaScript e Vite.
+- Backend: TypeScript e Cloudflare Workers.
+- Banco de dados: Cloudflare D1.
+- Monorepo: npm workspaces.
+- CI: GitHub Actions.
 
-Abra a URL exibida no terminal (geralmente http://localhost:5173). Clique em **Testar o protótipo V4**.
+## Executar localmente
 
-## Executar API (em outro terminal)
+Requisitos: Node.js 20+ e npm.
 
-```bash
-npm run api:dev
-```
+Instale as dependências:
 
-Verificação: http://localhost:8787/api/v1/health
+    npm install
 
-## Validar build
+Inicie a API em um terminal:
 
-```bash
-npm run typecheck
-npm run build
-```
+    npm run api:dev
+
+Inicie o frontend em outro terminal:
+
+    npm run dev
+
+Acesse http://localhost:5173.
+
+## Validar o projeto
+
+    npm run typecheck
+    npm run build
 
 ## Estrutura
 
-- `apps/web`: frontend Vite/TypeScript e protótipo aprovado (`public/demo.html`).
-- `apps/api`: Worker com endpoint inicial de health check.
-- `docs`: arquitetura e decisões.
-- `.github/workflows/ci.yml`: validação de frontend em push/PR para `main`.
+- app/web/index.html: aplicação principal.
+- app/web/vite.config.ts: configuração do frontend.
+- app/api/src/: API do Cloudflare Worker.
+- app/api/migrations/: migrações D1.
+- app/api/wrangler.staging.toml: staging.
+- app/api/wrangler.toml: produção.
+- docs/: documentação técnica.
 
-## Ainda não implementado
+## Ambientes
 
-Sorteio em produção, API de grupos, D1, autenticação administrativa, persistência de desejos, expiração automática, deploy Cloudflare e testes de integração. **Não utilize a demonstração para um sorteio real.**
+Staging:
+https://amigo-secreto-staging.antoniomartins.workers.dev
 
-## Próxima etapa
+Produção:
+https://amigo-secreto.antoniomartins.workers.dev
 
-Definir migrações D1, contratos REST e testes do algoritmo de sorteio antes de integrar a interface.
+Os ambientes possuem Workers e bancos D1 separados.
 
+## Privacidade
 
-## Créditos e GitHub
+Não exigimos cadastro, telefone ou e-mail.
 
-O rodapé exibe **Feito com 💜 por Antonio Martins**. O link do GitHub só aparece quando o repositório existir e for configurado.
+O link público não verifica a identidade dos participantes. Qualquer pessoa com esse link pode selecionar um nome, abrir seu envelope e acessar ou editar sua lista de desejos.
 
-1. Copie `apps/web/.env.example` para `apps/web/.env`.
-2. Configure `VITE_GITHUB_URL=https://github.com/SEU_USUARIO/SEU_REPOSITORIO`.
-3. Reinicie `npm run dev` para ver o link.
+O acesso do organizador utiliza um token separado.
 
-Para o deploy, configure `VITE_GITHUB_URL` nas variáveis de ambiente do build do frontend. Não coloque informações secretas em variáveis `VITE_`.
+A retenção planejada é de 60 dias. A exclusão automática ainda precisa ser validada.
 
-## Publicar no GitHub
+## Desenvolvimento
 
-Consulte [docs/github-setup.md](docs/github-setup.md) para criar o repositório, enviar o código e verificar o CI. A publicação na Cloudflare será configurada depois.
+As alterações são testadas em staging antes da publicação em produção.
 
+O GitHub Actions verifica o projeto, mas não realiza deploy automático.
 
-## Etapa 3 — API e D1 (em desenvolvimento)
+## Créditos
 
-Veja [`docs/etapa3-d1.md`](docs/etapa3-d1.md) para criar o banco, aplicar migrações e testar a API localmente. O frontend publicado permanece independente.
+Feito com 💜 por Antonio Martins.
+
+GitHub: https://github.com/antoniocarlosmjr/amigo-secreto
